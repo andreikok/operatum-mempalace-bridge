@@ -1,0 +1,26 @@
+[project]
+name = "operatum-mempalace-bridge"
+version = "0.1.0"
+description = "FastAPI bridge between operatum-memory (Node) and MemPalace (Python). Wraps drawers + KG + wings as HTTP."
+requires-python = ">=3.11"
+license = "MIT"
+
+# mempalace pinned to the post-HNSW-race-fix release. Bumping this
+# means rebuilding the docker image; the operatum-cli bootstrap
+# pulls a fresh image so users get the upgrade transparently.
+dependencies = [
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "mempalace==3.3.3",
+    "pydantic>=2.7,<3.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
