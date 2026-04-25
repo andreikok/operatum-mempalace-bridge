@@ -41,44 +41,66 @@ class KGAdapter:
                    valid_from: str | None = None,
                    valid_to: str | None = None,
                    confidence: float = 1.0,
-                   source: str | None = None) -> str:
-        """Insert one triple. Returns the inserted triple's id (mempalace
-        assigns this internally)."""
-        # Ensure both endpoints are registered as entities first;
-        # mempalace's add_triple expects them to exist.
+                   source: str | None = None) -> dict[str, Any]:
+        """Insert one triple. Returns a tuple identifier
+        { subject, predicate, object } — mempalace's add_triple
+        doesn't return an opaque id, the (s,p,o) tuple itself is the
+        identity (with valid_from for temporal disambiguation)."""
         s = slugify_entity(subject)
         o = slugify_entity(object_)
-        try:
-            self._kg.add_entity(name=subject)
-        except Exception:  # noqa: BLE001 — already-exists is fine
-            pass
-        try:
-            self._kg.add_entity(name=object_)
-        except Exception:
-            pass
-        triple_id = self._kg.add_triple(
-            subject=s, predicate=predicate, object=o,
+        # add_entity(name=...) is the mempalace-3.3.3 signature.
+        try: self._kg.add_entity(name=subject)
+        except Exception: pass  # noqa: BLE001
+        try: self._kg.add_entity(name=object_)
+        except Exception: pass
+        # mempalace's add_triple uses `obj` (not `object`) +
+        # `adapter_name` (not `source_adapter`). Returns None on
+        # success.
+        self._kg.add_triple(
+            subject=s, predicate=predicate, obj=o,
             valid_from=valid_from, valid_to=valid_to,
-            confidence=confidence, source_adapter=source or "operatum",
+            confidence=confidence, adapter_name=source or "operatum",
         )
-        return triple_id
+        return {"subject": s, "predicate": predicate, "obj": o,
+                "valid_from": valid_from}
 
     def query_entity(self, *, entity: str, as_of: str | None = None,
-                     direction: str = "both") -> list[dict[str, Any]]:
-        """Walk triples touching `entity`. Direction: 'subject'/'object'/'both'."""
+                     direction: str = "outgoing") -> list[dict[str, Any]]:
+        """Walk triples touching `entity`. mempalace direction is
+        'outgoing' / 'incoming'; we accept 'both' as a convenience
+        and merge the two queries."""
+        name = slugify_entity(entity)
+        if direction == "both":
+            out = self._kg.query_entity(name=name, as_of=as_of, direction="outgoing")
+            inc = self._kg.query_entity(name=name, as_of=as_of, direction="incoming")
+            seen = set()
+            merged: list[dict[str, Any]] = []
+            for r in (out or []) + (inc or []):
+                key = (r.get("subject"), r.get("predicate"), r.get("obj"),
+                       r.get("valid_from"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(r)
+            return merged
         return self._kg.query_entity(
-            name=slugify_entity(entity),
-            as_of=as_of,
-            direction=direction,
+            name=name, as_of=as_of, direction=direction)
+
+    def invalidate_triple(self, *, subject: str, predicate: str,
+                          object_: str, valid_to: str) -> None:
+        """mempalace's invalidate is keyed on the (s, p, o) tuple
+        plus an `ended` timestamp. Triples don't carry opaque ids
+        in mempalace's model."""
+        self._kg.invalidate(
+            subject=slugify_entity(subject),
+            predicate=predicate,
+            obj=slugify_entity(object_),
+            ended=valid_to,
         )
 
-    def invalidate_triple(self, *, triple_id: str, valid_to: str) -> None:
-        self._kg.invalidate(triple_id=triple_id, valid_to=valid_to)
-
     def timeline(self, *, entity: str) -> list[dict[str, Any]]:
-        """Chronological events for `entity`. Used for "what happened to
-        app X over time" queries."""
-        return self._kg.timeline(name=slugify_entity(entity))
+        """Chronological events for `entity`."""
+        return self._kg.timeline(entity_name=slugify_entity(entity))
 
     def stats(self) -> dict[str, Any]:
         try:

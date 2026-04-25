@@ -101,11 +101,12 @@ class ChromaPalaceAdapter:
         `query=None` falls back to a metadata-only get (for "list
         recent in this wing/room" use cases that don't need vector
         ranking)."""
+        normalised = _normalise_where(where)
         if query:
             qr = self._collection.query(
                 query_texts=[query],
                 n_results=max(1, min(n_results, 100)),
-                where=where,
+                where=normalised,
             )
             ids = qr.ids[0] if qr.ids else []
             docs = qr.documents[0] if qr.documents else []
@@ -113,7 +114,7 @@ class ChromaPalaceAdapter:
             dists = qr.distances[0] if qr.distances else []
         else:
             gr = self._collection.get(
-                where=where,
+                where=normalised,
                 limit=max(1, min(n_results, 100)),
             )
             ids = gr.ids or []
@@ -144,6 +145,32 @@ class ChromaPalaceAdapter:
             self._backend.close_palace(self._palace)
         except Exception:  # noqa: BLE001 — chromadb has no clean stop
             pass
+
+
+def _normalise_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
+    """ChromaDB rejects multi-key top-level wheres — every filter
+    must live inside a single operator. Wrap multi-key dicts in
+    `$and` automatically so the Node-side caller doesn't have to
+    track this. Single-key wheres pass through unchanged.
+
+    Example:
+      {tenant_id: {$eq: 'T1'}, kind: {$eq: 'wing'}}
+        → {$and: [{tenant_id: {$eq: 'T1'}}, {kind: {$eq: 'wing'}}]}
+    """
+    if not where:
+        return None
+    operator_keys = [k for k in where.keys() if k.startswith("$")]
+    field_keys = [k for k in where.keys() if not k.startswith("$")]
+    if not field_keys:
+        return where
+    if len(field_keys) == 1 and not operator_keys:
+        return where
+    # Multi-field — wrap in $and. Operator keys at top level
+    # (e.g. existing $or) merge into the $and as siblings.
+    clauses = [{k: where[k]} for k in field_keys]
+    for op in operator_keys:
+        clauses.append({op: where[op]})
+    return {"$and": clauses}
 
 
 def _coerce_metadata(meta: dict[str, Any]) -> dict[str, Any]:

@@ -10,12 +10,16 @@ def test_add_and_query_triple(client):
         "source": "agent_spawn",
     })
     assert r.status_code == 200, r.text
-    triple_id = r.json()["triple_id"]
-    assert triple_id
+    ident = r.json()["ident"]
+    # mempalace identifies triples by tuple; ident echoes the
+    # slugified shape so the caller can pass it to /invalidate.
+    assert ident["subject"] and ident["predicate"] and ident["obj"]
 
+    # Direction 'subject' is mempalace's 'outgoing' — triples where
+    # the entity is the subject.
     q = client.post("/kg/query", json={
         "entity": "thread parent-1",
-        "direction": "subject",
+        "direction": "outgoing",
     })
     assert q.status_code == 200, q.text
     out = q.json()
@@ -24,32 +28,30 @@ def test_add_and_query_triple(client):
 
 
 def test_invalidate_sets_valid_to(client):
-    r = client.post("/kg/triples", json={
+    client.post("/kg/triples", json={
         "subject": "thread P",
         "predicate": "subscribed_to",
         "object": "bus inbox.new",
         "valid_from": "2025-01-01T00:00:00Z",
     })
-    triple_id = r.json()["triple_id"]
 
     inv = client.post("/kg/invalidate", json={
-        "triple_id": triple_id,
+        "subject": "thread P",
+        "predicate": "subscribed_to",
+        "object": "bus inbox.new",
         "valid_to": "2025-01-15T00:00:00Z",
     })
     assert inv.status_code == 200, inv.text
 
-    # Querying as_of after the invalidation should NOT return the
-    # triple (it's no longer valid at that point in time).
+    # Pin the more important property — the invalidation ran
+    # without error. mempalace's exact as_of semantics for invalid
+    # triples is implementation-defined and the bridge surfaces
+    # whatever mempalace returns.
     q = client.post("/kg/query", json={
         "entity": "thread P",
         "as_of": "2025-02-01T00:00:00Z",
     })
     out = q.json()
-    rows = out["triples"]
-    # Defensive: the invalidated triple may or may not appear
-    # depending on mempalace's `as_of` semantics for now-invalid
-    # triples; pin the more important property — the invalidation
-    # ran without error.
     assert out["ok"] is True
 
 

@@ -27,8 +27,15 @@ class TripleQuery(BaseModel):
 
 
 class TripleInvalidate(BaseModel):
-    triple_id: str
+    """mempalace identifies triples by (subject, predicate, object)
+    rather than by an opaque id. The Node-side caller queries first,
+    then sends the tuple it wants to end + the timestamp."""
+    subject: str
+    predicate: str
+    object_: str = Field(..., alias="object")
     valid_to: str
+
+    model_config = {"populate_by_name": True}
 
 
 def _kg():
@@ -38,7 +45,7 @@ def _kg():
 
 @router.post("/triples")
 async def add_triple(body: TripleAdd, kg=Depends(_kg)):
-    triple_id = kg.add_triple(
+    ident = kg.add_triple(
         subject=body.subject,
         predicate=body.predicate,
         object_=body.object_,
@@ -47,7 +54,9 @@ async def add_triple(body: TripleAdd, kg=Depends(_kg)):
         confidence=body.confidence,
         source=body.source,
     )
-    return {"ok": True, "triple_id": triple_id}
+    # Return the tuple as a stable ident the caller can echo back to
+    # /kg/invalidate. mempalace itself doesn't use opaque ids.
+    return {"ok": True, "ident": ident}
 
 
 @router.post("/query")
@@ -62,8 +71,18 @@ async def query_triples(body: TripleQuery, kg=Depends(_kg)):
 
 @router.post("/invalidate")
 async def invalidate_triple(body: TripleInvalidate, kg=Depends(_kg)):
-    kg.invalidate_triple(triple_id=body.triple_id, valid_to=body.valid_to)
-    return {"ok": True, "triple_id": body.triple_id}
+    kg.invalidate_triple(
+        subject=body.subject,
+        predicate=body.predicate,
+        object_=body.object_,
+        valid_to=body.valid_to,
+    )
+    return {
+        "ok": True,
+        "subject": body.subject,
+        "predicate": body.predicate,
+        "object": body.object_,
+    }
 
 
 @router.get("/timeline/{entity}")
