@@ -1,148 +1,179 @@
 # operatum-mempalace-bridge — architecture
 
-> This document is grounded in the code as of the read. Earlier versions of
-> this file described a different (aspirational) design — OpenAI embeddings,
-> Postgres-backed KG, `/reflect`, port 3950. **None of that is in the code.**
-> The descriptions below reflect what actually ships.
+> Grounded in the source of *this* repository as of the read; each load-bearing
+> claim cites the file it came from. Earlier versions of this file described an
+> aspirational design (OpenAI embeddings, Postgres-backed KG, a `/reflect`
+> endpoint, port 3950) — **none of that is in the code** and it has been removed.
+> This document describes only what this repo does; the platform-side callers
+> live in other repositories and their internals are intentionally out of scope.
 
-A FastAPI service that wraps [MemPalace](https://pypi.org/project/mempalace/)
-(`mempalace==3.3.3`, `pyproject.toml:14`) behind a narrow HTTP API. It is the
-**only** thing in Operatum that talks to MemPalace; every Node consumer goes
-through it over loopback HTTP. It runs as a single-replica Docker sidecar.
+A FastAPI service (`src/main.py`) that wraps
+[MemPalace](https://pypi.org/project/mempalace/) (`mempalace==3.3.3`,
+`pyproject.toml:14`) behind a narrow HTTP API. It is the **bridge** between the
+memory palace and the platform: it translates a small HTTP contract into
+MemPalace's Python API and back. It is designed to run as a single-replica
+container (`Dockerfile`).
+
+## App shape
+
+`src/main.py` constructs the FastAPI app and mounts five routers
+(`src/main.py:95-99`):
+
+- `health` → `/healthz`
+- `drawers` (prefix `/drawers`) → CRUD
+- `search` → `/search`
+- `wings` (prefix `/wings`) → create / patch / list
+- `kg` (prefix `/kg`) → triples / query / invalidate / timeline / stats
+
+That is **14 endpoints total** (4 drawers + 1 search + 3 wings + 5 kg +
+1 health). The `Surface (11 endpoints …)` note in the `src/main.py` module
+docstring is a stale undercount — the router wiring above is authoritative.
+
+Two process-wide adapter singletons are booted in a FastAPI `lifespan`
+(`src/main.py:44-83`) and handed to routes through the `get_palace()` /
+`get_kg()` dependencies; the routes late-import these to avoid a circular import
+at module load (e.g. `src/routes/drawers.py:21-24`).
 
 ## Two adapters, two stores
 
-`src/main.py` boots two process-wide singletons in a FastAPI `lifespan`
-(`src/main.py:61-83`) and exposes them to routes via `get_palace()` /
-`get_kg()` dependencies:
+### 1. `ChromaPalaceAdapter` (`src/adapters/chroma_palace.py`)
 
-1. **`ChromaPalaceAdapter`** (`src/adapters/chroma_palace.py`) — wraps
-   `mempalace.backends.chroma.ChromaBackend` (`chroma_palace.py:26`). One
-   palace (`PalaceRef(id="operatum-shared", namespace="operatum")`,
-   `chroma_palace.py:41-45`), one collection `mempalace_drawers`
-   (`chroma_palace.py:46-50`). Backs **drawers**, **search**, and **wings**.
-   - Tenant isolation is NOT physical: it's a single shared collection, and
-     every Node `where` clause carries `tenant_id` (`chroma_palace.py:36-40`).
-   - ChromaDB metadata must be flat scalars; `_coerce_metadata`
-     (`chroma_palace.py:176-199`) joins lists with `;` and JSON-encodes dicts.
-   - ChromaDB rejects multi-key top-level `where`; `_normalise_where`
-     (`chroma_palace.py:150-173`) auto-wraps them in `$and`.
-   - Persisted under `MEMPALACE_PALACE_PATH` (`/data/palace`).
+Wraps `mempalace.backends.chroma.ChromaBackend`
+(`src/adapters/chroma_palace.py:26,35`). Backs **drawers**, **search**, and
+**wings**.
 
-2. **`KGAdapter`** (`src/adapters/kg_adapter.py`) — wraps
-   `mempalace.knowledge_graph.KnowledgeGraph` (`kg_adapter.py:25,36`). Backs
-   the **temporal KG**. Persisted in a **separate SQLite file**
-   `OPERATUM_BRIDGE_KG_PATH` (`/data/knowledge_graph.sqlite3`) — by mempalace's
-   own design, KG concerns (temporal/relational) are distinct from palace
-   concerns (verbatim/vector). Both live on the same `/data` volume so backups
-   are atomic.
+- One palace `PalaceRef(id="operatum-shared", namespace="operatum",
+  local_path=<palace_path>)`, one collection `mempalace_drawers`
+  (`src/adapters/chroma_palace.py:41-50`).
+- **Tenant isolation is not physical.** It is a single shared collection; the
+  caller carries `tenant_id` in every `where` clause. Running a separate palace
+  per tenant is deliberately avoided (`src/adapters/chroma_palace.py:36-45`).
+- **`_coerce_metadata`** (`:176-199`) — ChromaDB metadata must be flat scalars.
+  `None` is dropped, lists/tuples are stringified and `;`-joined (empty list →
+  key dropped), dicts are JSON-encoded, other types are `str()`-ed.
+- **`_normalise_where`** (`:150-173`) — ChromaDB rejects multi-key top-level
+  filters. Single-key filters pass through; multi-field filters are wrapped in a
+  `$and` (any top-level operator keys join as siblings).
+- **`search`** (`:97-132`) — with a `query`, runs a vector query; with
+  `query=None`, falls back to a metadata-only `get`. Result count is clamped to
+  `[1, 100]` in both paths.
+- Persisted under `MEMPALACE_PALACE_PATH` (`src/main.py:65-66`).
 
-The bridge holds **no other persistence** — no Postgres, no separate embedding
-service. Embeddings are ChromaDB's bundled ONNX model (cached under `HF_HOME`,
-`Dockerfile:18-23`).
+### 2. `KGAdapter` (`src/adapters/kg_adapter.py`)
+
+Wraps `mempalace.knowledge_graph.KnowledgeGraph`
+(`src/adapters/kg_adapter.py:25,36`). Backs the **temporal KG**, persisted in a
+**separate SQLite file** at `OPERATUM_BRIDGE_KG_PATH`
+(`src/main.py:67-68`). The two stores are separate by MemPalace's design — KG
+concerns are temporal/relational, palace concerns are verbatim/vector — but sit
+on the same `/data` volume so backups are atomic
+(`src/adapters/kg_adapter.py:1-7`).
+
+Triple shape and translations (`src/adapters/kg_adapter.py:9-21,40-103`):
+
+- `slugify_entity` lower-cases and replaces spaces with `_`, matching
+  MemPalace's own rule so add/query round-trip (`:28-30`).
+- `add_triple` best-effort registers both entities, then calls MemPalace's
+  `add_triple` with the renamed fields `obj` (not `object`) and `adapter_name`
+  (defaulting `source` to `"operatum"`). MemPalace returns no opaque id, so the
+  adapter echoes the `(subject, predicate, obj, valid_from)` tuple (`:40-65`).
+- `query_entity` passes `direction` straight through to MemPalace for `outgoing`
+  / `incoming`, and implements `both` locally by merging the two queries and
+  deduping on the `(subject, predicate, obj, valid_from)` key (`:67-87`).
+  > **Note:** the inline comment on `TripleQuery.direction`
+  > (`src/routes/kg.py:26`) labels the values `'subject' | 'object' | 'both'`,
+  > which is stale — the adapter only interprets `outgoing` / `incoming` /
+  > `both`. The default is `both` (`src/routes/kg.py:23-27`).
+- `invalidate_triple` maps to MemPalace's `invalidate(subject, predicate, obj,
+  ended=valid_to)`, keyed on the s/p/o tuple (`:89-99`).
+- `stats` and `count` swallow exceptions and return sentinel `-1` values rather
+  than propagating (`src/adapters/kg_adapter.py:105-109`,
+  `src/adapters/chroma_palace.py:134-138`), so `/healthz` stays up even if a
+  store is unreadable.
+
+The bridge holds no other persistence — no Postgres, no separate embedding
+service. Embeddings are ChromaDB's bundled ONNX model, downloaded on first use
+and cached under `HF_HOME` (`Dockerfile:15-23`).
 
 ## Wings: a logical layer, not a table
 
 There is no wings store. A wing is a registry row kept inside the palace as a
-drawer with id `_wing:<slug>` and `kind=_wing_registry` metadata
-(`src/routes/wings.py:1-12,45-61`). `GET /wings` is a metadata-only ChromaDB
-`get` filtered on that kind (`wings.py:80-102`). Live data: wing slugs are
-`thread-<8hex>` with `purpose` like `"Supervisor for issue …"`, one per
-spawned agent thread.
+drawer with id `_wing:<slug>` and `kind="_wing_registry"` metadata
+(`src/routes/wings.py:1-12,22,45-61`). `GET /wings` is a metadata-only `get`
+filtered on that kind, optionally narrowed by `tenant_id` and excluding
+`archived` rows by default (`src/routes/wings.py:80-102`). `PATCH /wings/{slug}`
+merges `archived` / `purpose` into that registry drawer and 404s if it is absent
+(`src/routes/wings.py:64-77`).
 
-## HTTP surface (`src/main.py:95-99`)
+## Error contract
 
-13 endpoints across five routers — see README for the full table. Summary:
-`drawers` (CRUD), `search` (POST), `wings` (POST/PATCH/GET), `kg`
-(triples/query/invalidate/timeline/stats), `health` (`/healthz`).
+Two app-level exception handlers normalise failures for the HTTP caller
+(`src/main.py:102-119`):
 
-Error contract (`src/main.py:102-119`): `KeyError → 404` not_found,
-`ValueError → 400` bad_request, both as `{ok:false, error, detail}` so the
-Node adapters can branch on shape.
+- `KeyError → 404 {ok:false, error:"not_found", detail}` — e.g. a missing drawer
+  (`src/adapters/chroma_palace.py:66-70`).
+- `ValueError → 400 {ok:false, error:"bad_request", detail}`.
 
-## Relationship to operatum-memory (the Node side)
+Route-level `HTTPException`s (e.g. the wing-not-found 404 in
+`src/routes/wings.py:75-76`) are surfaced by FastAPI directly.
 
-`operatum-memory` is the Node memory library. When configured with
-`OPERATUM_MEMORY_BACKEND=mempalace`, **this bridge is its storage backend**.
-Two distinct Node clients hit the bridge:
+## Runtime / deployment invariants
 
-- **`operatum-memory/src/backends/mempalace.js`** — `MempalaceBackend`
-  implements the `Memory` contract (`add/search/promote/demote/expire/stats`)
-  by calling `POST /drawers`, `POST /search`, `GET/PATCH/DELETE /drawers/{id}`
-  (`mempalace.js:184,204,235,244,267,291,364`). This is the **drawer storage
-  path**. There is also a Postgres-independent SQLite backend
-  (`backends/sqlite.js`) for deployments that don't run the bridge;
-  `backends/index.js:resolveBackendName` picks between them.
-- **`operatum-memory/src/kg-bridge.js`** — `KgBridge`, a thin client for the
-  `/kg/*` endpoints (`kg-bridge.js:69,82,100`). Deliberately separate from
-  `MempalaceBackend` because a triple write may happen without touching a
-  drawer (`kg-bridge.js:5-13`). Normalises mempalace's `obj` field back to
-  `object` on read (`kg-bridge.js:28-30`).
+- **Single replica only.** ChromaDB is single-writer; the Dockerfile pins
+  `uvicorn --workers 1` and documents that multi-process against one palace dir
+  corrupts the HNSW segments (`Dockerfile:1-8,48-52`).
+- **One `/data` volume** holds the palace dir, the KG SQLite file, and the HF
+  embedding cache (`Dockerfile:15-23`, `src/main.py:65-68`).
+- **No inbound auth** in this codebase — the service defines no auth middleware;
+  it exposes port 8081 and expects to be reached over a trusted/loopback network
+  (`Dockerfile:46`, `src/main.py`). The security boundary is the deployment's
+  responsibility, not this code's.
+- **First-run network egress only** for the embedding-model download
+  (`TRANSFORMERS_OFFLINE=0`, `Dockerfile:21`).
 
-When the backend is `sqlite` (no bridge), both the drawer and KG paths
-degrade to no-ops in the library.
+## Relationship to the rest of the platform
 
-## Relationship to the gateway (operatum-ui)
+This repo is the *only* MemPalace-facing component here; the platform-side
+callers live in other repositories and are out of scope for this document. What
+this repo assumes about them is visible in its own contract and adapter
+docstrings:
 
-The gateway has its OWN client,
-`operatum-ui/gateway/src/lib/mempalace-bridge-client.js`, separate from
-`operatum-memory`'s clients. It uses the bridge for **domain-event lineage**,
-not memory storage. All calls are **best-effort, fire-and-forget**, gated on
-`isBridgeConfigured()` (URL present), with a 5s timeout. If
-`OPERATUM_MEMPALACE_BRIDGE_URL` is unset, every call no-ops silently — and
-"no KG" is the pre-existing baseline, so unavailability is no regression
-(`mempalace-bridge-client.js` header comment).
+- Callers pass stable drawer ids of the form `mem-<uuid>`, passed through to
+  MemPalace verbatim (`src/adapters/chroma_palace.py:6-10`,
+  `src/routes/drawers.py:10-13`).
+- Callers always include `tenant_id` in `where` clauses, since isolation is
+  logical rather than physical (`src/adapters/chroma_palace.py:36-40`).
+- Wing membership is a `wing` metadata field the caller sets at upsert time;
+  these routes only manage the *registry* of wing slugs
+  (`src/routes/wings.py:1-12`).
 
-Call sites:
+Their internal file layout, call sites, and configuration are not described here
+to keep this document scoped to this repository.
 
-- **Agent spawn** (`gateway/src/lib/agent-spawn.js:367-418`): on every child
-  thread spawn, `createWing({ slug: thread-<8hex>, purpose: spawn_reason,
-  tenantId })` + `addTriple({ subject:"thread <id>", predicate:"spawned_by",
-  object:"thread <parent>"|"user <id>", source:"agent_spawn" })`.
-- **Cascade kill** (`gateway/src/routes/agents.js:297-349`): on thread kill,
-  for each descendant `archiveWing(slug)` + `queryTriples(direction:outgoing)`
-  then `invalidateTriple(...)` for each live `spawned_by` triple (sets
-  `valid_to`).
-- **MCP tools** (`gateway/src/routes/operatum-mcp.js:585-620`):
-  `memory_kg_query` / `memory_kg_timeline` proxy `queryTriples` / `timeline`;
-  they return a "not configured" note when the bridge URL is unset.
-- **Admin / health** (`gateway/src/routes/admin.js:1799`,
-  `admin-system-health.js:169`, `health.js:73`): call `/healthz` for status.
+## Live vs dormant paths
 
-Ports: gateway resolves `mempalaceBridge` to `8081` (primary) / `18081`
-(test) in `gateway/src/lib/paths.js:220-232`; compose binds
-`127.0.0.1:${MEMPALACE_BRIDGE_PORT:-8081}:8081`
-(`operatum-ui/docker-compose.yml:183`).
+Verified from the code, not from a running instance:
 
-## EXPOSES / CONSUMES
+- **Exercised by tests** (`tests/test_*.py`): drawer CRUD, semantic search and
+  the `query=None` listing fallback, wing create/list/archive, KG
+  add/query/invalidate/timeline, and `/healthz`.
+- **Implemented but lightly exercised:** the KG `as_of` temporal filter, the
+  `incoming` / `both` query directions, `GET /kg/timeline`, and per-triple
+  `confidence` — all wired through the adapter but thin on test coverage, and
+  `predicate` is free-form (the example predicates in
+  `src/adapters/kg_adapter.py:12` such as `subscribed_to` / `became_unhealthy`
+  are illustrative, not enforced).
+- **Stale-but-harmless comments** flagged inline above: the `11 endpoints`
+  docstring count (`src/main.py:8`) and the `direction` label comment
+  (`src/routes/kg.py:26`). Neither affects behaviour.
 
-**EXPOSES** (HTTP `:8081`, loopback only, no auth):
-drawers CRUD · `/search` · wings CRUD/list · `/kg/{triples,query,invalidate,timeline,stats}` · `/healthz`.
-
-**CONSUMES**:
-- `mempalace==3.3.3` (Python lib) — `ChromaBackend` + `KnowledgeGraph`.
-- ChromaDB (vendored by mempalace) + its bundled ONNX embedding model.
-- The `/data` Docker volume (palace dir + KG sqlite + HF cache).
-- No network egress beyond first-run model download (`TRANSFORMERS_OFFLINE=0`).
-
-## Live vs aspirational
-
-- **LIVE**: the container `operatum-ui-mempalace-bridge-1` is healthy and in
-  active use — `/healthz` reports 673 drawers, 76 entities, 75 `spawned_by`
-  triples, 75 wings (`thread-*`). Both the storage path and the spawn-lineage
-  path are writing.
-- **Narrow in practice**: the KG has exactly one predicate today
-  (`spawned_by`). `confidence`, `as_of`, `timeline`, and `incoming`/`both`
-  directions are implemented but lightly exercised. The header comments
-  mention other predicates (`subscribed_to`, `became_unhealthy`) as examples
-  — those are illustrative, not currently written by any call site.
+This repo makes no source-verifiable claim about how many drawers, wings, or
+triples a deployed instance currently holds — those are runtime facts, not code.
 
 ## Where to start reading
 
 - `src/main.py` — app entry, lifespan, adapter singletons, error handlers.
-- `src/adapters/chroma_palace.py` — drawer/search/wing storage.
-- `src/adapters/kg_adapter.py` — temporal KG.
+- `src/adapters/chroma_palace.py` — drawer / search / wing storage + coercion.
+- `src/adapters/kg_adapter.py` — temporal KG + field translation.
 - `src/routes/{drawers,search,wings,kg,health}.py` — the HTTP surface.
-- Node consumers: `operatum-memory/src/backends/mempalace.js`,
-  `operatum-memory/src/kg-bridge.js`,
-  `operatum-ui/gateway/src/lib/mempalace-bridge-client.js`.
+- `tests/conftest.py` — how the palace + KG are booted per test.
