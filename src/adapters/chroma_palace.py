@@ -113,9 +113,14 @@ class ChromaPalaceAdapter:
             metas = qr.metadatas[0] if qr.metadatas else []
             dists = qr.distances[0] if qr.distances else []
         else:
+            # No 100-result cap here: metadata-only enumeration is used
+            # by the retention sweeper and quota enforcer which need the
+            # full matching set. The 100-cap on the query() path above
+            # is appropriate for ranked vector search; a sequential
+            # metadata get() has no such accuracy trade-off.
             gr = self._collection.get(
                 where=normalised,
-                limit=max(1, min(n_results, 100)),
+                limit=max(1, n_results),
             )
             ids = gr.ids or []
             docs = gr.documents or []

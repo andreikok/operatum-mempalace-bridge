@@ -57,3 +57,33 @@ def test_metadata_only_listing_when_query_null(client):
     # Should return mem-1 (user-a + critical) and not the others.
     ids = sorted(h["drawer_id"] for h in out["hits"])
     assert ids == ["mem-1"], f"expected only mem-1; got {ids}"
+
+
+def test_metadata_listing_returns_more_than_100_rows(client):
+    """Metadata-only search must NOT cap at 100.
+
+    The retention sweeper and quota enforcer pass n_results=1_000_000 to
+    request the full scope for ranking. If the bridge caps at 100, scopes
+    larger than 100 can never be correctly swept or quota-enforced.
+    """
+    for i in range(110):
+        client.post("/drawers", json={
+            "drawer_id": f"bulk-{i}",
+            "content": f"memory {i}",
+            "metadata": {
+                "room": "layer2-episodic",
+                "tenant_id": "T-bulk",
+                "user_id": "u-bulk",
+            },
+        })
+    r = client.post("/search", json={
+        "query": None,
+        "where": {"tenant_id": {"$eq": "T-bulk"}},
+        "n_results": 200,
+    })
+    out = r.json()
+    assert out["ok"] is True, r.text
+    assert len(out["hits"]) == 110, (
+        f"metadata-only search must return all 110 rows (no 100-row cap); "
+        f"got {len(out['hits'])}"
+    )
