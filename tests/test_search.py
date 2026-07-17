@@ -1,5 +1,7 @@
 """Search surface: semantic + metadata-filter + listing fallback."""
 
+from pathlib import Path
+
 
 def _seed(client):
     rows = [
@@ -86,4 +88,55 @@ def test_metadata_listing_returns_more_than_100_rows(client):
     assert len(out["hits"]) == 110, (
         f"metadata-only search must return all 110 rows (no 100-row cap); "
         f"got {len(out['hits'])}"
+    )
+
+
+def test_vector_query_still_capped_at_100_rows(client):
+    """Vector-query (non-null query) search must remain capped at 100
+    rows even when the collection holds more and the caller asks for
+    more. This is the counterpart to
+    test_metadata_listing_returns_more_than_100_rows: that test pins
+    the null-query path is uncapped, this one pins the query() path
+    is still capped.
+    """
+    for i in range(110):
+        client.post("/drawers", json={
+            "drawer_id": f"vec-{i}",
+            "content": f"memory about topic number {i}",
+            "metadata": {
+                "room": "layer2-episodic",
+                "tenant_id": "T-vec",
+                "user_id": "u-vec",
+            },
+        })
+    r = client.post("/search", json={
+        "query": "topic",
+        "where": {"tenant_id": {"$eq": "T-vec"}},
+        "n_results": 200,
+    })
+    out = r.json()
+    assert out["ok"] is True, r.text
+    assert len(out["hits"]) <= 100, (
+        f"vector-query search must remain capped at 100 rows; "
+        f"got {len(out['hits'])}"
+    )
+
+
+def test_100_cap_appears_only_before_the_first_collection_get_call():
+    """Source-contract pin, mirroring the gateway's co-located check
+    (operatum-ui/gateway/test/memory-retention.test.js, ~L428): the
+    `min(n_results, 100)` cap must appear BEFORE the first
+    `collection.get(` call in the file. That gateway test scans the raw
+    source with no method scoping, so an unrelated earlier `.get()` call
+    (e.g. from a CRUD helper) sorted ahead of the search method would
+    make the cap look like it also covers the null-query recall path.
+    """
+    src_path = Path(__file__).resolve().parents[1] / "src" / "adapters" / "chroma_palace.py"
+    lines = src_path.read_text().splitlines()
+    cap_idx = next(i for i, l in enumerate(lines) if "min(n_results, 100)" in l)
+    get_idx = next(i for i, l in enumerate(lines) if "collection.get(" in l)
+    assert cap_idx < get_idx, (
+        f"min(n_results, 100) (line {cap_idx + 1}) must appear before the first "
+        f"collection.get( call (line {get_idx + 1}) in the file, or the gateway's "
+        "source-contract test misreads the cap as covering the null-query path"
     )
