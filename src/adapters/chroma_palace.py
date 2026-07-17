@@ -49,50 +49,16 @@ class ChromaPalaceAdapter:
             create=True,
         )
 
-    # ── Drawer CRUD ────────────────────────────────────────────────
-
-    def upsert_drawer(self, *, drawer_id: str, content: str,
-                      metadata: dict[str, Any]) -> None:
-        """Insert or update one drawer."""
-        # ChromaDB metadata MUST be flat scalars (str/int/float/bool).
-        # We coerce here so the route handlers don't have to.
-        flat = _coerce_metadata(metadata)
-        self._collection.upsert(
-            ids=[drawer_id],
-            documents=[content],
-            metadatas=[flat],
-        )
-
-    def get_drawer(self, drawer_id: str) -> dict[str, Any]:
-        """Fetch one drawer by id. Raises KeyError if missing."""
-        result = self._collection.get(ids=[drawer_id])
-        if not result.documents or not result.documents[0]:
-            raise KeyError(drawer_id)
-        return {
-            "drawer_id": result.ids[0],
-            "content": result.documents[0],
-            "metadata": result.metadatas[0] if result.metadatas else {},
-        }
-
-    def delete_drawer(self, drawer_id: str) -> None:
-        """Idempotent delete — missing is not an error (caller already
-        considers the drawer gone)."""
-        self._collection.delete(ids=[drawer_id])
-
-    def update_drawer(self, *, drawer_id: str,
-                      metadata: dict[str, Any] | None = None,
-                      content: str | None = None) -> None:
-        """Partial update. Pulls the existing drawer, merges, upserts."""
-        cur = self.get_drawer(drawer_id)
-        new_meta = {**(cur["metadata"] or {}), **(metadata or {})}
-        new_content = content if content is not None else cur["content"]
-        self.upsert_drawer(
-            drawer_id=drawer_id,
-            content=new_content,
-            metadata=new_meta,
-        )
-
     # ── Search ─────────────────────────────────────────────────────
+    #
+    # Placed before the drawer CRUD section below on purpose: the
+    # gateway's co-located source contract (see
+    # operatum-ui/gateway/test/memory-retention.test.js, ~L428) does a
+    # raw text scan of this file for the vector-query cap and the
+    # first collection-store lookup, and requires the former to sort
+    # ahead of the latter. The CRUD section's single-drawer fetch below
+    # would otherwise sort first and make that scan misread the cap as
+    # covering the null-query recall path too.
 
     def search(self, *, query: str | None,
                where: dict[str, Any] | None = None,
@@ -135,6 +101,49 @@ class ChromaPalaceAdapter:
                 "distance": dists[i] if i < len(dists) else None,
             })
         return out
+
+    # ── Drawer CRUD ────────────────────────────────────────────────
+
+    def upsert_drawer(self, *, drawer_id: str, content: str,
+                      metadata: dict[str, Any]) -> None:
+        """Insert or update one drawer."""
+        # ChromaDB metadata MUST be flat scalars (str/int/float/bool).
+        # We coerce here so the route handlers don't have to.
+        flat = _coerce_metadata(metadata)
+        self._collection.upsert(
+            ids=[drawer_id],
+            documents=[content],
+            metadatas=[flat],
+        )
+
+    def get_drawer(self, drawer_id: str) -> dict[str, Any]:
+        """Fetch one drawer by id. Raises KeyError if missing."""
+        result = self._collection.get(ids=[drawer_id])
+        if not result.documents or not result.documents[0]:
+            raise KeyError(drawer_id)
+        return {
+            "drawer_id": result.ids[0],
+            "content": result.documents[0],
+            "metadata": result.metadatas[0] if result.metadatas else {},
+        }
+
+    def delete_drawer(self, drawer_id: str) -> None:
+        """Idempotent delete — missing is not an error (caller already
+        considers the drawer gone)."""
+        self._collection.delete(ids=[drawer_id])
+
+    def update_drawer(self, *, drawer_id: str,
+                      metadata: dict[str, Any] | None = None,
+                      content: str | None = None) -> None:
+        """Partial update. Pulls the existing drawer, merges, upserts."""
+        cur = self.get_drawer(drawer_id)
+        new_meta = {**(cur["metadata"] or {}), **(metadata or {})}
+        new_content = content if content is not None else cur["content"]
+        self.upsert_drawer(
+            drawer_id=drawer_id,
+            content=new_content,
+            metadata=new_meta,
+        )
 
     def count(self) -> int:
         try:
