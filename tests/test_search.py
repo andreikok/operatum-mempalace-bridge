@@ -91,6 +91,37 @@ def test_metadata_listing_returns_more_than_100_rows(client):
     )
 
 
+def test_vector_query_still_capped_at_100_rows(client):
+    """Vector-query (non-null query) search must remain capped at 100
+    rows even when the collection holds more and the caller asks for
+    more. This is the counterpart to
+    test_metadata_listing_returns_more_than_100_rows: that test pins
+    the null-query path is uncapped, this one pins the query() path
+    is still capped.
+    """
+    for i in range(110):
+        client.post("/drawers", json={
+            "drawer_id": f"vec-{i}",
+            "content": f"memory about topic number {i}",
+            "metadata": {
+                "room": "layer2-episodic",
+                "tenant_id": "T-vec",
+                "user_id": "u-vec",
+            },
+        })
+    r = client.post("/search", json={
+        "query": "topic",
+        "where": {"tenant_id": {"$eq": "T-vec"}},
+        "n_results": 200,
+    })
+    out = r.json()
+    assert out["ok"] is True, r.text
+    assert len(out["hits"]) <= 100, (
+        f"vector-query search must remain capped at 100 rows; "
+        f"got {len(out['hits'])}"
+    )
+
+
 def test_100_cap_appears_only_before_the_first_collection_get_call():
     """Source-contract pin, mirroring the gateway's co-located check
     (operatum-ui/gateway/test/memory-retention.test.js, ~L428): the
