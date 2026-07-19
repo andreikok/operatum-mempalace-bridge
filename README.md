@@ -78,7 +78,7 @@ Every success response is `{ "ok": true, ... }` (see each route module).
 
 | Method / path | Body | Purpose |
 |---|---|---|
-| `POST /search` | `{ query?, where?, n_results }` | Semantic search. When `query` is null, falls back to a metadata-only `get` (list-by-filter). `where` is a ChromaDB-style filter; `n_results` is clamped to `[1, 100]` (`src/adapters/chroma_palace.py:97-132`). |
+| `POST /search` | `{ query?, where?, n_results }` | Semantic search. With a non-empty `query`, vector results are clamped to `[1, 100]`. When `query` is null, the metadata-only `get` (list-by-filter) honors `n_results` with a minimum of 1 and has no 100-row cap. `where` is a ChromaDB-style filter (`src/adapters/chroma_palace.py`). |
 
 ### Wings (`src/routes/wings.py`)
 

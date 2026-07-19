@@ -54,9 +54,11 @@ Wraps `mempalace.backends.chroma.ChromaBackend`
 - **`_normalise_where`** (`:150-173`) — ChromaDB rejects multi-key top-level
   filters. Single-key filters pass through; multi-field filters are wrapped in a
   `$and` (any top-level operator keys join as siblings).
-- **`search`** (`:97-132`) — with a `query`, runs a vector query; with
-  `query=None`, falls back to a metadata-only `get`. Result count is clamped to
-  `[1, 100]` in both paths.
+- **`search`** (`src/adapters/chroma_palace.py`) — with a non-empty `query`,
+  runs a vector query clamped to `[1, 100]`; with `query=None`, falls back to a
+  metadata-only `get` that honors `n_results` with a minimum of 1 and has no
+  100-row cap. The uncapped metadata path is required by callers that enumerate
+  a complete filtered scope.
 - Persisted under `MEMPALACE_PALACE_PATH` (`src/main.py:65-66`).
 
 ### 2. `KGAdapter` (`src/adapters/kg_adapter.py`)

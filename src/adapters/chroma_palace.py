@@ -50,15 +50,6 @@ class ChromaPalaceAdapter:
         )
 
     # ── Search ─────────────────────────────────────────────────────
-    #
-    # Placed before the drawer CRUD section below on purpose: the
-    # gateway's co-located source contract (see
-    # operatum-ui/gateway/test/memory-retention.test.js, ~L428) does a
-    # raw text scan of this file for the vector-query cap and the
-    # first collection-store lookup, and requires the former to sort
-    # ahead of the latter. The CRUD section's single-drawer fetch below
-    # would otherwise sort first and make that scan misread the cap as
-    # covering the null-query recall path too.
 
     def search(self, *, query: str | None,
                where: dict[str, Any] | None = None,
