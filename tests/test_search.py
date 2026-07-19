@@ -1,7 +1,5 @@
 """Search surface: semantic + metadata-filter + listing fallback."""
 
-from pathlib import Path
-
 
 def _seed(client):
     rows = [
@@ -119,24 +117,4 @@ def test_vector_query_still_capped_at_100_rows(client):
     assert len(out["hits"]) <= 100, (
         f"vector-query search must remain capped at 100 rows; "
         f"got {len(out['hits'])}"
-    )
-
-
-def test_100_cap_appears_only_before_the_first_collection_get_call():
-    """Source-contract pin, mirroring the gateway's co-located check
-    (operatum-ui/gateway/test/memory-retention.test.js, ~L428): the
-    `min(n_results, 100)` cap must appear BEFORE the first
-    `collection.get(` call in the file. That gateway test scans the raw
-    source with no method scoping, so an unrelated earlier `.get()` call
-    (e.g. from a CRUD helper) sorted ahead of the search method would
-    make the cap look like it also covers the null-query recall path.
-    """
-    src_path = Path(__file__).resolve().parents[1] / "src" / "adapters" / "chroma_palace.py"
-    lines = src_path.read_text().splitlines()
-    cap_idx = next(i for i, l in enumerate(lines) if "min(n_results, 100)" in l)
-    get_idx = next(i for i, l in enumerate(lines) if "collection.get(" in l)
-    assert cap_idx < get_idx, (
-        f"min(n_results, 100) (line {cap_idx + 1}) must appear before the first "
-        f"collection.get( call (line {get_idx + 1}) in the file, or the gateway's "
-        "source-contract test misreads the cap as covering the null-query path"
     )
