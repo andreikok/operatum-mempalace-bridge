@@ -152,3 +152,39 @@ def test_concurrent_create_if_absent_has_one_winner(client):
     winner = next(response.json()["drawer"] for response in responses
                   if response.status_code == 200)
     assert client.get("/drawers/plan-distillation-race").json()["content"] == winner["content"]
+
+
+def test_concurrent_identical_create_if_absent_creates_once(client):
+    body = {
+        "drawer_id": "plan-distillation-identical-race",
+        "content": "One reviewed conclusion",
+        "metadata": {
+            "source_id": "plan-1:generation-1",
+            "tags": ["strategic", "distillation_conclusion"],
+        },
+    }
+
+    def create():
+        return client.post("/drawers/create-if-absent", json=body)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(lambda _request: create(), range(2)))
+
+    assert [response.status_code for response in responses] == [200, 200]
+    payloads = [response.json() for response in responses]
+    assert sorted(payload["created"] for payload in payloads) == [False, True]
+
+    expected_drawer = {
+        "drawer_id": body["drawer_id"],
+        "content": body["content"],
+        "metadata": {
+            "source_id": "plan-1:generation-1",
+            "tags": "strategic;distillation_conclusion",
+        },
+    }
+    assert all(payload["drawer"] == expected_drawer for payload in payloads)
+    assert client.get(f"/drawers/{body['drawer_id']}").json() == {
+        "ok": True,
+        **expected_drawer,
+    }
+    assert client.get("/healthz").json()["drawer_count"] == 1
