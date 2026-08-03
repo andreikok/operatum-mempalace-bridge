@@ -25,7 +25,7 @@ container (`Dockerfile`).
 - `wings` (prefix `/wings`) → create / patch / list
 - `kg` (prefix `/kg`) → triples / query / invalidate / timeline / stats
 
-That is **14 endpoints total** (4 drawers + 1 search + 3 wings + 5 kg +
+That is **15 endpoints total** (5 drawers + 1 search + 3 wings + 5 kg +
 1 health). The `Surface (11 endpoints …)` note in the `src/main.py` module
 docstring is a stale undercount — the router wiring above is authoritative.
 
@@ -59,6 +59,11 @@ Wraps `mempalace.backends.chroma.ChromaBackend`
   metadata-only `get` that honors `n_results` with a minimum of 1 and has no
   100-row cap. The uncapped metadata path is required by callers that enumerate
   a complete filtered scope.
+- **Atomic conditional create** — `POST /drawers/create-if-absent` holds one
+  adapter lock across the Chroma existence check and insert. A replay succeeds
+  only when content and `_coerce_metadata` output exactly match the stored row;
+  otherwise it returns 409 without writing. `POST /drawers` retains its
+  unconditional upsert semantics.
 - Persisted under `MEMPALACE_PALACE_PATH` (`src/main.py:65-66`).
 
 ### 2. `KGAdapter` (`src/adapters/kg_adapter.py`)
@@ -109,12 +114,14 @@ merges `archived` / `purpose` into that registry drawer and 404s if it is absent
 
 ## Error contract
 
-Two app-level exception handlers normalise failures for the HTTP caller
+Three app-level exception handlers normalise failures for the HTTP caller
 (`src/main.py:102-119`):
 
 - `KeyError → 404 {ok:false, error:"not_found", detail}` — e.g. a missing drawer
   (`src/adapters/chroma_palace.py:66-70`).
 - `ValueError → 400 {ok:false, error:"bad_request", detail}`.
+- `DrawerConflictError → 409 {ok:false, error:"conflict", detail}` when a
+  conditional create finds different content or normalized metadata.
 
 Route-level `HTTPException`s (e.g. the wing-not-found 404 in
 `src/routes/wings.py:75-76`) are surfaced by FastAPI directly.
@@ -123,7 +130,8 @@ Route-level `HTTPException`s (e.g. the wing-not-found 404 in
 
 - **Single replica only.** ChromaDB is single-writer; the Dockerfile pins
   `uvicorn --workers 1` and documents that multi-process against one palace dir
-  corrupts the HNSW segments (`Dockerfile:1-8,48-52`).
+  corrupts the HNSW segments (`Dockerfile:1-8,48-52`). The same invariant is
+  required for the process-local conditional-create lock to cover all callers.
 - **One `/data` volume** holds the palace dir, the KG SQLite file, and the HF
   embedding cache (`Dockerfile:15-23`, `src/main.py:65-68`).
 - **No inbound auth** in this codebase — the service defines no auth middleware;

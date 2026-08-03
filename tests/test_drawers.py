@@ -1,5 +1,7 @@
 """End-to-end drawer CRUD against a real (per-test) palace."""
 
+from concurrent.futures import ThreadPoolExecutor
+
 
 def test_upsert_get_roundtrip(client):
     body = {
@@ -79,3 +81,74 @@ def test_metadata_arrays_get_flattened_to_csv(client):
     # Lists came in as ['one', 'two', 'three']; the adapter
     # semicolon-joins them so chroma will accept the value.
     assert out["metadata"]["tags"] == "one;two;three"
+
+
+def test_create_if_absent_is_idempotent_after_metadata_normalisation(client):
+    body = {
+        "drawer_id": "plan-distillation-001",
+        "content": "Reviewed conclusion",
+        "metadata": {
+            "source_type": "operator-plan-distillation-v1",
+            "source_id": "plan-1:generation-1",
+            "tags": ["strategic", "distillation_conclusion"],
+            "expires_at": None,
+        },
+    }
+
+    created = client.post("/drawers/create-if-absent", json=body)
+    assert created.status_code == 200, created.text
+    assert created.json() == {
+        "ok": True,
+        "created": True,
+        "drawer": {
+            "drawer_id": "plan-distillation-001",
+            "content": "Reviewed conclusion",
+            "metadata": {
+                "source_type": "operator-plan-distillation-v1",
+                "source_id": "plan-1:generation-1",
+                "tags": "strategic;distillation_conclusion",
+            },
+        },
+    }
+
+    repeated = client.post("/drawers/create-if-absent", json=body)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json() == {**created.json(), "created": False}
+
+
+def test_create_if_absent_conflicts_without_overwriting(client):
+    original = {
+        "drawer_id": "plan-distillation-conflict",
+        "content": "Original reviewed conclusion",
+        "metadata": {"source_id": "plan-1:generation-1"},
+    }
+    assert client.post("/drawers/create-if-absent", json=original).status_code == 200
+
+    for changed in (
+        {**original, "content": "Different conclusion"},
+        {**original, "metadata": {"source_id": "plan-1:generation-2"}},
+    ):
+        conflict = client.post("/drawers/create-if-absent", json=changed)
+        assert conflict.status_code == 409, conflict.text
+        assert conflict.json()["error"] == "conflict"
+
+    stored = client.get("/drawers/plan-distillation-conflict").json()
+    assert stored["content"] == original["content"]
+    assert stored["metadata"] == original["metadata"]
+
+
+def test_concurrent_create_if_absent_has_one_winner(client):
+    def create(content):
+        return client.post("/drawers/create-if-absent", json={
+            "drawer_id": "plan-distillation-race",
+            "content": content,
+            "metadata": {"source_id": "plan-1:generation-1"},
+        })
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(create, ["first candidate", "second candidate"]))
+
+    assert sorted(response.status_code for response in responses) == [200, 409]
+    winner = next(response.json()["drawer"] for response in responses
+                  if response.status_code == 200)
+    assert client.get("/drawers/plan-distillation-race").json()["content"] == winner["content"]
