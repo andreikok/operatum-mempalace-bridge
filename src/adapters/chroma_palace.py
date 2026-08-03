@@ -21,10 +21,15 @@ metadata; mempalace doesn't enforce per-wing collections (per its
 RFC 003 §2.2 — wings are a logical layer).
 """
 
+from threading import Lock
 from typing import Any
 
 from mempalace.backends.chroma import ChromaBackend
 from mempalace.backends.base import PalaceRef
+
+
+class DrawerConflictError(Exception):
+    """A conditional create found different data under the requested id."""
 
 
 class ChromaPalaceAdapter:
@@ -48,6 +53,7 @@ class ChromaPalaceAdapter:
             collection_name="mempalace_drawers",
             create=True,
         )
+        self._create_lock = Lock()
 
     # ── Search ─────────────────────────────────────────────────────
 
@@ -106,6 +112,28 @@ class ChromaPalaceAdapter:
             documents=[content],
             metadatas=[flat],
         )
+
+    def create_drawer_if_absent(self, *, drawer_id: str, content: str,
+                                metadata: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+        """Create once, or return an exact normalized match already stored."""
+        expected_metadata = _coerce_metadata(metadata)
+        # Deployment permits exactly one bridge process for a palace, so this
+        # process-local lock covers conditional-create requests from all clients.
+        with self._create_lock:
+            try:
+                stored = self.get_drawer(drawer_id)
+            except KeyError:
+                self.upsert_drawer(
+                    drawer_id=drawer_id,
+                    content=content,
+                    metadata=expected_metadata,
+                )
+                return True, self.get_drawer(drawer_id)
+
+            if (stored["content"] != content
+                    or stored["metadata"] != expected_metadata):
+                raise DrawerConflictError(drawer_id)
+            return False, stored
 
     def get_drawer(self, drawer_id: str) -> dict[str, Any]:
         """Fetch one drawer by id. Raises KeyError if missing."""

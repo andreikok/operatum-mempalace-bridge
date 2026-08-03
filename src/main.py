@@ -7,6 +7,8 @@ Sits in front of:
 
 Surface (11 endpoints, see route modules):
   POST   /drawers              create / upsert
+  POST   /drawers/create-if-absent
+                               atomic conditional create
   GET    /drawers/{id}         fetch
   PATCH  /drawers/{id}         move room or update metadata
   DELETE /drawers/{id}
@@ -32,7 +34,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
-from src.adapters.chroma_palace import ChromaPalaceAdapter
+from src.adapters.chroma_palace import ChromaPalaceAdapter, DrawerConflictError
 from src.adapters.kg_adapter import KGAdapter
 from src.routes import drawers, search, wings, kg, health
 
@@ -115,5 +117,14 @@ async def value_error_handler(_request, exc: ValueError):
     return JSONResponse(status_code=400, content={
         "ok": False,
         "error": "bad_request",
+        "detail": str(exc),
+    })
+
+
+@app.exception_handler(DrawerConflictError)
+async def drawer_conflict_handler(_request, exc: DrawerConflictError):
+    return JSONResponse(status_code=409, content={
+        "ok": False,
+        "error": "conflict",
         "detail": str(exc),
     })

@@ -13,7 +13,7 @@ instead of importing MemPalace directly.
 
 ## What it is
 
-- A FastAPI app (`src/main.py`) exposing **14 HTTP endpoints** across five
+- A FastAPI app (`src/main.py`) exposing **15 HTTP endpoints** across five
   routers (`src/routes/{drawers,search,wings,kg,health}.py`, wired in
   `src/main.py:95-99`).
 - Two process-wide adapter singletons booted in a FastAPI `lifespan`
@@ -70,6 +70,7 @@ Every success response is `{ "ok": true, ... }` (see each route module).
 | Method / path | Body | Purpose |
 |---|---|---|
 | `POST /drawers` | `{ drawer_id, content, metadata }` | Insert / upsert one drawer. `content` is vector-indexed; `metadata` is coerced to flat scalars. |
+| `POST /drawers/create-if-absent` | `{ drawer_id, content, metadata }` | Atomically create within the bridge process. Returns the stored drawer with `created: true` for a new row or `created: false` for an exact content + normalized-metadata replay; returns 409 for different data under the same id. |
 | `GET /drawers/{id}` | — | Fetch one drawer. 404 if missing. |
 | `PATCH /drawers/{id}` | `{ metadata?, content? }` | Partial update (read-merge-upsert). 404 if missing. |
 | `DELETE /drawers/{id}` | — | Idempotent delete (missing is not an error). |
@@ -120,7 +121,10 @@ port 8081 (`Dockerfile:44-52`).
 
 Run **exactly one** replica per palace volume. ChromaDB is single-writer; two
 processes against the same palace dir corrupt the HNSW segments. The Dockerfile
-pins `--workers 1` for this reason (`Dockerfile:48-52`).
+pins `--workers 1` for this reason (`Dockerfile:48-52`). This invariant also
+makes `POST /drawers/create-if-absent` atomic across clients: one process-local
+lock serializes its existence check and insert. `POST /drawers` remains an
+unconditional upsert.
 
 ## Tests
 

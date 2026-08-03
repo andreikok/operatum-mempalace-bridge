@@ -34,6 +34,16 @@ async def upsert_drawer(body: DrawerWrite, palace=Depends(_palace)):
     return {"ok": True, "drawer_id": body.drawer_id}
 
 
+@router.post("/create-if-absent")
+async def create_drawer_if_absent(body: DrawerWrite, palace=Depends(_palace)):
+    created, drawer = palace.create_drawer_if_absent(
+        drawer_id=body.drawer_id,
+        content=body.content,
+        metadata=body.metadata,
+    )
+    return {"ok": True, "created": created, "drawer": drawer}
+
+
 @router.get("/{drawer_id}")
 async def get_drawer(drawer_id: str, palace=Depends(_palace)):
     return {"ok": True, **palace.get_drawer(drawer_id)}
