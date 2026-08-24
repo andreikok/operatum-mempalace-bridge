@@ -187,3 +187,16 @@ triples a deployed instance currently holds — those are runtime facts, not cod
 - `src/adapters/kg_adapter.py` — temporal KG + field translation.
 - `src/routes/{drawers,search,wings,kg,health}.py` — the HTTP surface.
 - `tests/conftest.py` — how the palace + KG are booted per test.
+
+---
+
+## Verification stamp — 2026-08-24
+
+Checked during a platform-wide documentation pass. **No source changes since this
+document was last written**, and the specific claim below was re-tested against
+the code or the running system rather than assumed:
+
+* Port **8081** confirmed live: `operatum-ui-mempalace-bridge-1` on `127.0.0.1:8081`, with a test twin on `127.0.0.1:18081`. The conditional-create contract this exposes is relied on by `operatum-memory` plan distillation.
+
+Treat the rest of this file as accurate to its original date. Where it and the
+source disagree, the source wins — and please correct the line.
