@@ -13,7 +13,7 @@ instead of importing MemPalace directly.
 
 ## What it is
 
-- A FastAPI app (`src/main.py`) exposing **15 HTTP endpoints** across five
+- A FastAPI app (`src/main.py`) exposing **16 HTTP endpoints** across five
   routers (`src/routes/{drawers,search,wings,kg,health}.py`, wired in
   `src/main.py:95-99`).
 - Two process-wide adapter singletons booted in a FastAPI `lifespan`
@@ -88,6 +88,7 @@ Every success response is `{ "ok": true, ... }` (see each route module).
 | `POST /wings` | `{ slug, purpose?, tenant_id? }` | Create / upsert a wing registry entry. |
 | `PATCH /wings/{slug}` | `{ archived?, purpose? }` | Archive or re-purpose. 404 if the wing does not exist. |
 | `GET /wings` | `?tenant_id=&include_archived=` | List wings (excludes archived by default). |
+| `GET /wings/{slug}` | `?tenant_id=<required>` | Fetch one exact registry row without the list bound. Returns 404 unless the registry kind, path slug, and tenant all match. |
 
 ### Knowledge graph (`src/routes/kg.py`)
 

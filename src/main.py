@@ -5,7 +5,7 @@ Sits in front of:
   - mempalace.backends.chroma.ChromaBackend  (drawers + vector search)
   - mempalace.knowledge_graph.KnowledgeGraph  (temporal ER triples)
 
-Surface (11 endpoints, see route modules):
+Surface (16 endpoints, see route modules):
   POST   /drawers              create / upsert
   POST   /drawers/create-if-absent
                                atomic conditional create
@@ -16,6 +16,7 @@ Surface (11 endpoints, see route modules):
   POST   /wings                create or archive
   PATCH  /wings/{slug}
   GET    /wings                list
+  GET    /wings/{slug}         exact tenant-scoped registry lookup
   POST   /kg/triples           add (entity, predicate, object, validity)
   POST   /kg/query             query by entity, optional as_of
   POST   /kg/invalidate        set valid_to on a triple

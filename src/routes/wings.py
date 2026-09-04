@@ -1,5 +1,6 @@
 """
-Wings: POST /wings (create), PATCH /wings/{slug} (archive), GET /wings (list).
+Wings: POST /wings (create), PATCH /wings/{slug} (archive),
+GET /wings (list), GET /wings/{slug} (exact tenant-scoped lookup).
 
 Wings in mempalace are a logical layer over drawers — there's no
 "wings" table to write to. We model wing membership purely via the
@@ -100,3 +101,27 @@ async def list_wings(tenant_id: str | None = None,
         if h["metadata"].get("slug")
     ]
     return {"ok": True, "wings": wings, "count": len(wings)}
+
+
+@router.get("/{slug}")
+async def get_wing(slug: str, tenant_id: str,
+                   palace=Depends(_palace)):
+    """Fetch one registry wing without depending on the bounded list view."""
+    try:
+        drawer = palace.get_drawer(_wing_id(slug))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"wing '{slug}' not found")
+    metadata = drawer.get("metadata") or {}
+    if (metadata.get("kind") != "_wing_registry"
+            or metadata.get("slug") != slug
+            or metadata.get("tenant_id") != tenant_id):
+        raise HTTPException(status_code=404, detail=f"wing '{slug}' not found")
+    return {
+        "ok": True,
+        "wing": {
+            "slug": metadata["slug"],
+            "purpose": metadata.get("purpose"),
+            "archived": bool(metadata.get("archived", False)),
+            "tenant_id": metadata.get("tenant_id"),
+        },
+    }

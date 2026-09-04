@@ -22,12 +22,11 @@ container (`Dockerfile`).
 - `health` → `/healthz`
 - `drawers` (prefix `/drawers`) → CRUD
 - `search` → `/search`
-- `wings` (prefix `/wings`) → create / patch / list
+- `wings` (prefix `/wings`) → create / patch / list / exact tenant lookup
 - `kg` (prefix `/kg`) → triples / query / invalidate / timeline / stats
 
-That is **15 endpoints total** (5 drawers + 1 search + 3 wings + 5 kg +
-1 health). The `Surface (11 endpoints …)` note in the `src/main.py` module
-docstring is a stale undercount — the router wiring above is authoritative.
+That is **16 endpoints total** (5 drawers + 1 search + 4 wings + 5 kg +
+1 health).
 
 Two process-wide adapter singletons are booted in a FastAPI `lifespan`
 (`src/main.py:44-83`) and handed to routes through the `get_palace()` /
@@ -111,6 +110,11 @@ filtered on that kind, optionally narrowed by `tenant_id` and excluding
 `archived` rows by default (`src/routes/wings.py:80-102`). `PATCH /wings/{slug}`
 merges `archived` / `purpose` into that registry drawer and 404s if it is absent
 (`src/routes/wings.py:64-77`).
+
+`GET /wings/{slug}?tenant_id=…` is the exact lookup used when a bounded list is
+not authoritative enough. Tenant scope is mandatory, and the route returns 404
+unless the stored row has registry kind, metadata slug, and tenant matching the
+requested identity (`src/routes/wings.py`).
 
 ## Error contract
 

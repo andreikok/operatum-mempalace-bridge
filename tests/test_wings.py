@@ -37,6 +37,49 @@ def test_archive_wing_excludes_from_default_list(client):
     })
     assert "thread-x" in [w["slug"] for w in r2.json()["wings"]]
 
+    exact = client.get("/wings/thread-x", params={"tenant_id": "T1"})
+    assert exact.status_code == 200, exact.text
+    assert exact.json()["wing"]["archived"] is True
+
+
+def test_exact_wing_lookup_is_tenant_scoped(client):
+    client.post("/wings", json={"slug": "thread-exact", "tenant_id": "T1"})
+    assert client.get(
+        "/wings/thread-exact", params={"tenant_id": "T1"}
+    ).status_code == 200
+    assert client.get(
+        "/wings/thread-exact", params={"tenant_id": "T2"}
+    ).status_code == 404
+    assert client.get("/wings/missing", params={"tenant_id": "T1"}).status_code == 404
+    assert client.get("/wings/thread-exact").status_code == 422
+
+
+def test_exact_wing_lookup_rejects_forged_registry_identity(client):
+    client.post("/drawers", json={
+        "drawer_id": "_wing:wrong-kind",
+        "content": "not a registry row",
+        "metadata": {
+            "kind": "ordinary_memory",
+            "slug": "wrong-kind",
+            "tenant_id": "T1",
+        },
+    })
+    client.post("/drawers", json={
+        "drawer_id": "_wing:path-slug",
+        "content": "mismatched registry row",
+        "metadata": {
+            "kind": "_wing_registry",
+            "slug": "different-slug",
+            "tenant_id": "T1",
+        },
+    })
+    assert client.get(
+        "/wings/wrong-kind", params={"tenant_id": "T1"}
+    ).status_code == 404
+    assert client.get(
+        "/wings/path-slug", params={"tenant_id": "T1"}
+    ).status_code == 404
+
 
 def test_patch_unknown_wing_returns_404(client):
     r = client.patch("/wings/nope", json={"archived": True})
